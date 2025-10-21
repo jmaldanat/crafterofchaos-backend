@@ -1,8 +1,8 @@
 
 import { Hono } from 'hono'
 import { drizzle } from 'drizzle-orm/d1'
-import { eq } from 'drizzle-orm'
-import { products, categories } from './db/schema'
+import { eq, and } from 'drizzle-orm'
+import { products, categories, tags, productTags } from './db/schema'
 
 export type Env = {
   DB: D1Database
@@ -118,7 +118,7 @@ app.put('/products', async (c) => {
     }
   }
   for (const item of productsArray) {
-    const { title, price, code, asin, category } = item;
+    const { title, price, code, asin, category, tags: tagsRaw } = item;
     if (!title || !price || !code || !category) {
       stats.omitted++;
       continue;
@@ -137,6 +137,7 @@ app.put('/products', async (c) => {
     }
     // Verificar si el producto ya existe por code
     const existing = await db.select().from(products).where(eq(products.code, code)).get();
+    let productId;
     let result;
     if (existing && existing.id) {
       // Actualizar producto existente
@@ -151,10 +152,11 @@ app.put('/products', async (c) => {
         })
         .where(eq(products.code, code))
         .returning();
+      productId = existing.id;
       stats.updated++;
     } else {
       // Insertar nuevo producto
-      result = await db.insert(products).values({
+      const insertedProduct = await db.insert(products).values({
         title,
         price: Number(price),
         code,
@@ -163,9 +165,44 @@ app.put('/products', async (c) => {
         disponible: true,
         habilitado: true,
       }).returning();
+      productId = Array.isArray(insertedProduct) && insertedProduct.length > 0 ? insertedProduct[0].id : undefined;
+      result = insertedProduct;
       stats.inserted++;
     }
     results.push(result);
+    // Procesar tags si existen
+    if (tagsRaw && productId) {
+      // Extraer el string de etiquetas del campo tagsRaw
+      let tagsString = tagsRaw;
+      // Si viene como '"etiquetas":"Mazda,Miata,..."', extraer solo la parte de etiquetas
+      const etiquetasMatch = tagsString.match(/etiquetas":"([^"]+)/);
+      if (etiquetasMatch) {
+        tagsString = etiquetasMatch[1];
+      }
+  const tagsArr = tagsString.split(',').map((t: string) => t.trim().toLowerCase()).filter(Boolean);
+      for (const tagName of tagsArr) {
+        // Buscar el tag por nombre
+        let tag = await db.select().from(tags).where(eq(tags.name, tagName)).get();
+        let tagId = tag?.id;
+        if (!tagId) {
+          // Insertar el tag si no existe
+          const newTag = await db.insert(tags).values({ name: tagName }).returning();
+          tagId = Array.isArray(newTag) && newTag.length > 0 ? newTag[0].id : undefined;
+        }
+        if (tagId) {
+          // Relacionar producto y tag en productTags
+          const existsRelation = await db.select().from(productTags)
+            .where(and(
+              eq(productTags.productId, productId),
+              eq(productTags.tagId, tagId)
+            ))
+            .get();
+          if (!existsRelation) {
+            await db.insert(productTags).values({ productId, tagId });
+          }
+        }
+      }
+    }
   }
   return c.json({
     stats,
