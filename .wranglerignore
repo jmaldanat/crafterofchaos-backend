@@ -1,0 +1,7 @@
+# Archivos y carpetas ignorados por Wrangler
+node_modules/
+.env
+*.log
+drizle/migrations/
+productos.json
+# Puedes agregar más archivos o carpetas aquí

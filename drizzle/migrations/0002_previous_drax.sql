@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX `products_asin_unique` ON `products` (`asin`);

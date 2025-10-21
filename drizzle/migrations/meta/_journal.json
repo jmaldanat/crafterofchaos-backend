@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1761064196218,
+      "tag": "0000_peaceful_strong_guy",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1761070809253,
+      "tag": "0001_slim_rattler",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1761070991097,
+      "tag": "0002_previous_drax",
+      "breakpoints": true
+    }
+  ]
+}
