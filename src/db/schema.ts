@@ -33,6 +33,7 @@ export const productDetails = sqliteTable("product_details", {
   shortDescription: text("short_description"),
   longDescription: text("long_description"),
   imageUrls: text("image_urls"), // JSON o lista separada por comas
+  mainImage: text("main_image"), // Nueva columna para la imagen principal
 });
 
 export const tags = sqliteTable("tags", {
