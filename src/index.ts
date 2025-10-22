@@ -1,8 +1,7 @@
-
 import { Hono } from 'hono'
 import { drizzle } from 'drizzle-orm/d1'
 import { eq, and } from 'drizzle-orm'
-import { products, categories, tags, productTags } from './db/schema'
+import { products, categories, tags, productTags, productDetails } from './db/schema'
 
 export type Env = {
   DB: D1Database
@@ -96,7 +95,6 @@ app.put('/products', async (c) => {
   const db = drizzle(c.env.DB);
   const body = await c.req.json();
   let productsArray = Array.isArray(body) ? body : [body];
-  const results = [];
   let stats = {
     inserted: 0,
     updated: 0,
@@ -104,11 +102,8 @@ app.put('/products', async (c) => {
     markedUnavailable: 0,
     total: productsArray.length
   };
-  // Obtener todos los códigos del JSON
   const codesInJson = new Set(productsArray.map(p => p.code));
-  // Obtener todos los productos actuales de la base
   const allProducts = await db.select().from(products).all();
-  // Marcar como disponible: false los que no están en el JSON
   for (const prod of allProducts) {
     if (!codesInJson.has(prod.code) && prod.disponible !== false) {
       await db.update(products)
@@ -118,16 +113,14 @@ app.put('/products', async (c) => {
     }
   }
   for (const item of productsArray) {
-    const { title, price, code, asin, category, tags: tagsRaw } = item;
+    const { title, price, code, asin, category, tags: tagsRaw, image } = item;
     if (!title || !price || !code || !category) {
       stats.omitted++;
       continue;
     }
-    // Buscar el categoryId por nombre en la tabla categories
     const cat = await db.select().from(categories).where(eq(categories.name, category)).get();
     let categoryId = cat?.id;
     if (!categoryId) {
-      // Crear la categoría si no existe
       const newCat = await db.insert(categories).values({ name: category }).returning();
       categoryId = (Array.isArray(newCat) && newCat.length > 0 && 'id' in newCat[0]) ? newCat[0].id : undefined;
       if (!categoryId) {
@@ -135,13 +128,10 @@ app.put('/products', async (c) => {
         continue;
       }
     }
-    // Verificar si el producto ya existe por code
     const existing = await db.select().from(products).where(eq(products.code, code)).get();
     let productId;
-    let result;
     if (existing && existing.id) {
-      // Actualizar producto existente
-      result = await db.update(products)
+      await db.update(products)
         .set({
           title,
           price: Number(price),
@@ -150,12 +140,10 @@ app.put('/products', async (c) => {
           disponible: true,
           habilitado: true,
         })
-        .where(eq(products.code, code))
-        .returning();
+        .where(eq(products.code, code));
       productId = existing.id;
       stats.updated++;
     } else {
-      // Insertar nuevo producto
       const insertedProduct = await db.insert(products).values({
         title,
         price: Number(price),
@@ -166,31 +154,36 @@ app.put('/products', async (c) => {
         habilitado: true,
       }).returning();
       productId = Array.isArray(insertedProduct) && insertedProduct.length > 0 ? insertedProduct[0].id : undefined;
-      result = insertedProduct;
       stats.inserted++;
     }
-    results.push(result);
-    // Procesar tags si existen
+    if (productId && image) {
+      const existingDetails = await db.select().from(productDetails).where(eq(productDetails.productId, productId)).get();
+      if (existingDetails && existingDetails.id) {
+        await db.update(productDetails)
+          .set({ mainImage: image })
+          .where(eq(productDetails.productId, productId));
+      } else {
+        await db.insert(productDetails).values({
+          productId,
+          mainImage: image
+        });
+      }
+    }
     if (tagsRaw && productId) {
-      // Extraer el string de etiquetas del campo tagsRaw
       let tagsString = tagsRaw;
-      // Si viene como '"etiquetas":"Mazda,Miata,..."', extraer solo la parte de etiquetas
       const etiquetasMatch = tagsString.match(/etiquetas":"([^"]+)/);
       if (etiquetasMatch) {
         tagsString = etiquetasMatch[1];
       }
-  const tagsArr = tagsString.split(',').map((t: string) => t.trim().toLowerCase()).filter(Boolean);
+      const tagsArr = tagsString.split(',').map((t: string) => t.trim().toLowerCase()).filter(Boolean);
       for (const tagName of tagsArr) {
-        // Buscar el tag por nombre
         let tag = await db.select().from(tags).where(eq(tags.name, tagName)).get();
         let tagId = tag?.id;
         if (!tagId) {
-          // Insertar el tag si no existe
           const newTag = await db.insert(tags).values({ name: tagName }).returning();
           tagId = Array.isArray(newTag) && newTag.length > 0 ? newTag[0].id : undefined;
         }
         if (tagId) {
-          // Relacionar producto y tag en productTags
           const existsRelation = await db.select().from(productTags)
             .where(and(
               eq(productTags.productId, productId),
@@ -205,8 +198,7 @@ app.put('/products', async (c) => {
     }
   }
   return c.json({
-    stats,
-    results
+    stats
   }, 201);
 });
 
