@@ -93,7 +93,7 @@ app.put('/products', async (c) => {
         existing.disponible !== true ||
         existing.habilitado !== true;
 
-      if (existing.habilitado === false) {
+      if (existing.disponible === false) { // <-- CAMBIO AQUÍ
         await db.update(products)
           .set({
             title,

@@ -16,7 +16,7 @@ export const products = sqliteTable("products", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   title: text("title").notNull(),
   price: real("price").notNull(),
-  asin: text("asin").notNull().unique(),
+  asin: text("asin").notNull(),
   code: text("code").notNull().unique(),
   created: text("created").default(sql`(datetime('now'))`),
   modified: text("modified").default(sql`(datetime('now'))`),
