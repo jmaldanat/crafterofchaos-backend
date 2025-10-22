@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { drizzle } from 'drizzle-orm/d1'
-import { eq, and } from 'drizzle-orm'
-import { products, categories, tags, productTags, productDetails } from './db/schema'
+import { eq } from 'drizzle-orm'
+import { products, categories } from './db/schema'
 
 export type Env = {
   DB: D1Database
@@ -27,65 +27,6 @@ app.get('/product', async (c) => {
   return c.json(result);
 });
 
-app.post('/products', async (c) => {
-  const apiKey = c.req.header('x-api-key');
-  const expectedKey = c.env.API_KEY;
-  if (!apiKey || apiKey !== expectedKey) {
-    return c.text('Unauthorized', 401);
-  }
-  const db = drizzle(c.env.DB);
-  const body = await c.req.json();
-  let productsArray = Array.isArray(body) ? body : [body];
-  const inserted = [];
-  for (const item of productsArray) {
-    const { title, price, code, asin, category } = item;
-    if (!title || !price || !code || !category) {
-      continue;
-    }
-    // Buscar el categoryId por nombre en la tabla categories
-    const cat = await db.select().from(categories).where(eq(categories.name, category)).get();
-    let categoryId = cat?.id;
-    if (!categoryId) {
-      // Crear la categoría si no existe
-      const newCat = await db.insert(categories).values({ name: category }).returning();
-      categoryId = (Array.isArray(newCat) && newCat.length > 0 && 'id' in newCat[0]) ? newCat[0].id : undefined;
-      if (!categoryId) {
-        continue;
-      }
-    }
-    // Verificar si el producto ya existe por code
-    const existing = await db.select().from(products).where(eq(products.code, code)).get();
-    let result;
-    if (existing && existing.id) {
-      // Actualizar producto existente
-      result = await db.update(products)
-        .set({
-          title,
-          price: Number(price),
-          asin,
-          categoryId,
-          disponible: true,
-          habilitado: true,
-        })
-        .where(eq(products.code, code))
-        .returning();
-    } else {
-      // Insertar nuevo producto
-      result = await db.insert(products).values({
-        title,
-        price: Number(price),
-        code,
-        asin,
-        categoryId,
-        disponible: true,
-        habilitado: true,
-      }).returning();
-    }
-    inserted.push(result);
-  }
-  return c.json(inserted, 201);
-});
-
 app.put('/products', async (c) => {
   const apiKey = c.req.header('x-api-key');
   const expectedKey = c.env.API_KEY;
@@ -100,10 +41,18 @@ app.put('/products', async (c) => {
     updated: 0,
     omitted: 0,
     markedUnavailable: 0,
+    markedAvailable: 0,
     total: productsArray.length
   };
-  const codesInJson = new Set(productsArray.map(p => p.code));
+
+  // Obtener todas las categorías y productos una sola vez
+  const allCategories = await db.select().from(categories).all();
+  const categoryMap = new Map(allCategories.map(cat => [cat.name, cat.id]));
   const allProducts = await db.select().from(products).all();
+  const productMap = new Map(allProducts.map(prod => [prod.code, prod]));
+
+  // Marcar como disponible: false los que no están en el JSON
+  const codesInJson = new Set(productsArray.map(p => p.code));
   for (const prod of allProducts) {
     if (!codesInJson.has(prod.code) && prod.disponible !== false) {
       await db.update(products)
@@ -112,14 +61,16 @@ app.put('/products', async (c) => {
       stats.markedUnavailable++;
     }
   }
+
   for (const item of productsArray) {
-    const { title, price, code, asin, category, tags: tagsRaw, image } = item;
+    const { title, price, code, asin, category } = item;
     if (!title || !price || !code || !category) {
       stats.omitted++;
       continue;
     }
-    const cat = await db.select().from(categories).where(eq(categories.name, category)).get();
-    let categoryId = cat?.id;
+
+    // Usar el mapa de categorías
+    let categoryId = categoryMap.get(category);
     if (!categoryId) {
       const newCat = await db.insert(categories).values({ name: category }).returning();
       categoryId = (Array.isArray(newCat) && newCat.length > 0 && 'id' in newCat[0]) ? newCat[0].id : undefined;
@@ -127,24 +78,53 @@ app.put('/products', async (c) => {
         stats.omitted++;
         continue;
       }
+      categoryMap.set(category, categoryId);
     }
-    const existing = await db.select().from(products).where(eq(products.code, code)).get();
-    let productId;
+
+    // Usar el mapa de productos
+    const existing = productMap.get(code);
     if (existing && existing.id) {
-      await db.update(products)
-        .set({
-          title,
-          price: Number(price),
-          asin,
-          categoryId,
-          disponible: true,
-          habilitado: true,
-        })
-        .where(eq(products.code, code));
-      productId = existing.id;
-      stats.updated++;
+      // Detectar si hay cambios reales
+      const needsUpdate =
+        existing.title !== title ||
+        Number(existing.price) !== Number(price) ||
+        existing.asin !== asin ||
+        existing.categoryId !== categoryId ||
+        existing.disponible !== true ||
+        existing.habilitado !== true;
+
+      if (existing.habilitado === false) {
+        await db.update(products)
+          .set({
+            title,
+            price: Number(price),
+            asin,
+            categoryId,
+            disponible: true,
+            habilitado: true,
+          })
+          .where(eq(products.code, code));
+        stats.markedAvailable++;
+        // Actualizar el mapa
+        productMap.set(code, { ...existing, title, price: Number(price), asin, categoryId, disponible: true, habilitado: true });
+      } else if (needsUpdate) {
+        await db.update(products)
+          .set({
+            title,
+            price: Number(price),
+            asin,
+            categoryId,
+            disponible: true,
+            habilitado: true,
+          })
+          .where(eq(products.code, code));
+        stats.updated++;
+        // Actualizar el mapa
+        productMap.set(code, { ...existing, title, price: Number(price), asin, categoryId, disponible: true, habilitado: true });
+      }
+      // Si no hay cambios, no sumes nada
     } else {
-      const insertedProduct = await db.insert(products).values({
+      const inserted = await db.insert(products).values({
         title,
         price: Number(price),
         code,
@@ -153,53 +133,13 @@ app.put('/products', async (c) => {
         disponible: true,
         habilitado: true,
       }).returning();
-      productId = Array.isArray(insertedProduct) && insertedProduct.length > 0 ? insertedProduct[0].id : undefined;
       stats.inserted++;
-    }
-    if (productId && image) {
-      const existingDetails = await db.select().from(productDetails).where(eq(productDetails.productId, productId)).get();
-      if (existingDetails && existingDetails.id) {
-        await db.update(productDetails)
-          .set({ mainImage: image })
-          .where(eq(productDetails.productId, productId));
-      } else {
-        await db.insert(productDetails).values({
-          productId,
-          mainImage: image
-        });
-      }
-    }
-    if (tagsRaw && productId) {
-      let tagsString = tagsRaw;
-      const etiquetasMatch = tagsString.match(/etiquetas":"([^"]+)/);
-      if (etiquetasMatch) {
-        tagsString = etiquetasMatch[1];
-      }
-      const tagsArr = tagsString.split(',').map((t: string) => t.trim().toLowerCase()).filter(Boolean);
-      for (const tagName of tagsArr) {
-        let tag = await db.select().from(tags).where(eq(tags.name, tagName)).get();
-        let tagId = tag?.id;
-        if (!tagId) {
-          const newTag = await db.insert(tags).values({ name: tagName }).returning();
-          tagId = Array.isArray(newTag) && newTag.length > 0 ? newTag[0].id : undefined;
-        }
-        if (tagId) {
-          const existsRelation = await db.select().from(productTags)
-            .where(and(
-              eq(productTags.productId, productId),
-              eq(productTags.tagId, tagId)
-            ))
-            .get();
-          if (!existsRelation) {
-            await db.insert(productTags).values({ productId, tagId });
-          }
-        }
-      }
+      // Actualizar el mapa con el id retornado
+      const newProduct = Array.isArray(inserted) ? inserted[0] : inserted;
+      productMap.set(code, { ...newProduct });
     }
   }
-  return c.json({
-    stats
-  }, 201);
+  return c.json(stats, 201);
 });
 
 export default app
